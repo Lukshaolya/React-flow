@@ -1,0 +1,336 @@
+{
+  "QueryTemplates": [
+    {
+      "Id": 36,
+      "Name": "insert into insights.y_derived_tag_request_urls",
+      "Text": "INSERT INTO insights.y_derived_tag_request_urls\n(`date`, tag_id, cuid, bid_request_identifier_hash, url_cleaned, url_cleaned_hash)\nWITH selected_interval AS (\n\tSELECT\n\t\tmin_request_iid as min_iid,\n\t\tmax_request_iid as max_iid\n\tFROM insights.request_iid_intervals\n\tWHERE interval_index = {partition}\n)\nSELECT \n\tdate,\n\ttag_id,\n\tcuid,\n\tbid_request_identifier_hash,\n\turl_cleaned,\n\turl_cleaned_hash\nFROM \n(\n\tSELECT\n\t\tdate,\n\t\ttag_id,\n\t\tcuid,\n\t\tbid_request_identifier_hash,\n\t\turl_cleaned,\n\t\turl_cleaned_hash,\n\t\tif((toUnixTimestamp64Milli(request_timestamp_utc) - toUnixTimestamp64Milli(tag_timestamp_utc)) > 0, toUnixTimestamp64Milli(request_timestamp_utc) - toUnixTimestamp64Milli(tag_timestamp_utc), NULL) AS milliseconds_after_tag,\n\t\tif((toUnixTimestamp64Milli(tag_timestamp_utc) - toUnixTimestamp64Milli(request_timestamp_utc)) > 0, toUnixTimestamp64Milli(tag_timestamp_utc) - toUnixTimestamp64Milli(request_timestamp_utc), NULL) AS milliseconds_before_tag\n\tFROM (\n\t\tSELECT\n\t\t\tr.date AS date,\n\t\t\tr.request_timestamp_utc as request_timestamp_utc,\n\t\t\tt.tag_timestamp_utc as tag_timestamp_utc,\n\t\t\tr.bid_request_identifier_hash as bid_request_identifier_hash,\n\t\t\tr.url_cleaned as url_cleaned,\n\t\t\tr.url_cleaned_hash as url_cleaned_hash,\n\t\t\tt.tag_id as tag_id,\n\t\t\tt.cuid as cuid\n\t\tFROM (\n\t\t\tSELECT \n\t\t\t\tdate,\n\t\t\t\trequest_timestamp_utc,\n\t\t\t\tbid_request_identifier_hash,\n\t\t\t\turl_cleaned,\n\t\t\t\turl_cleaned_hash,\n\t\t\t\trequest_iid\n\t\t\tFROM warehouse.requests\n\t\t\tWHERE date = {date}\n\t\t\t\tAND request_iid >= (SELECT min_iid FROM selected_interval)\n\t\t\t\tAND ((SELECT max_iid FROM selected_interval) IS NULL OR request_iid < (SELECT max_iid FROM selected_interval))\n\t\t\t\tAND isNotNull(bid_request_identifier)\n\t\t\t\tAND bid_request_identifier != ''\n\t\t\t\tAND isNotNull(url_cleaned)\n\t\t\t\tAND url_cleaned != ''\n\t\t\t\tAND path(url_cleaned) NOT lIKE '/quote%'\n\t\t\t\tAND path(url_cleaned) NOT lIKE '/search/%'\n\t\t\t\tAND path(url_cleaned) NOT lIKE '/photos/%'\n\t\t\t\tAND url_cleaned NOT IN (\n\t\t\t\t\tSELECT url\n\t\t\t\t\tFROM insights.requests_exclude_url\n\t\t\t\t)\n\t\t\t\tAND domain(url_cleaned) NOT IN (\n\t\t\t\t\tSELECT domain\n\t\t\t\t\tFROM insights.requests_exclude_domain\n\t\t\t\t)\n\t\t\t\tAND length(creative_size_ids) != 0\n\t\t) r\n\t\tINNER JOIN (\n\t\t\tSELECT\n\t\t\t\ttag_id,\n\t\t\t\tiid,\n\t\t\t\tcuid,\n\t\t\t\ttag_timestamp_utc\n\t\t\tFROM insights.y_tag_candidates\n\t\t\tWHERE date = {date}\n\t\t) t ON r.request_iid = t.iid \n\t)\n)\nWHERE (milliseconds_after_tag IS NULL OR milliseconds_after_tag <= 3.6e6)\n\tAND (milliseconds_before_tag IS NULL OR milliseconds_before_tag <= 6.0e5)",
+      "TimeoutSeconds": 36000
+    },
+    {
+      "Id": 42,
+      "Name": "insert into insights.requests_sum",
+      "Text": "INSERT INTO insights.requests_sum (\n\turl_cleaned,\n\turl_cleaned_hash,\n\tcuid,\n\tdate,\n\trequest_count\n)\nWITH selected_interval AS (\n\tSELECT\n\t\tmin_request_iid as min_iid,\n\t\tmax_request_iid as max_iid\n\tFROM insights.request_iid_intervals\n\tWHERE interval_index = {partition}\n) \nSELECT\n\tr.url_cleaned,\n\tr.url_cleaned_hash,\n\tc.cuid,\n\t{date},\n\tr.r_c as request_count\nFROM (\n\tSELECT\n\t\turl_cleaned,\n\t\turl_cleaned_hash,\n\t\trequest_iid,\n\t\t1 as r_c\n\tFROM warehouse.requests\n\tWHERE date = {date}\n\t\tAND request_iid >= (SELECT min_iid FROM selected_interval)\n\t\tAND ((SELECT max_iid FROM selected_interval) IS NULL OR request_iid < (SELECT max_iid FROM selected_interval))\n\t\tAND isNotNull(bid_request_identifier)\n\t\tAND bid_request_identifier != ''\n\t\tAND isNotNull(url_cleaned)\n\t\tAND url_cleaned != ''\n\t\tAND url_cleaned_hash NOT IN (\n\t\t\tSELECT url_hash\n\t\t\tFROM insights.requests_exclude_url\n\t\t)\n\t\tAND domain(url_cleaned) NOT IN (\n\t\t\tSELECT domain\n\t\t\tFROM insights.requests_exclude_domain\n\t\t)\n\t\tAND length(creative_size_ids) > 0\n) r\nINNER JOIN (\n\tSELECT\n\t\tiid,\n\t\tcuid\n\tFROM insights.y_tag_candidates\n\tWHERE date = {date}\n\t\tAND iid >= (SELECT min_iid FROM selected_interval)\n\t\tAND ((SELECT max_iid FROM selected_interval) IS NULL OR iid < (SELECT max_iid FROM selected_interval))\n) c ON r.request_iid = c.iid",
+      "TimeoutSeconds": 36000
+    },
+    {
+      "Id": 41,
+      "Name": "insert into insights.y_keywords",
+      "Text": "INSERT INTO insights.y_keywords\n(tag_id, advertiser_id, keyword, users, tag_phrase_request_count, total_phrase_user_count, total_phrase_request_count, CVR1, CVR2, Normalized_CPI_by_requests_med_ratio, Normalized_CPI_by_users_med_ratio, cvr_rank, `date`)\nWITH keywords_with_advertiser AS (\n\tWITH t AS (\n\t\tSELECT DISTINCT advertiser_id, event_source_id FROM warehouse.events WHERE date = {date}\n\t)\n\tSELECT\n\t\tk.tag_id,\n\t\tk.keyword,\n\t\tt.advertiser_id,\n\t\tk.users,\n\t\tk.tag_phrase_request_count,\n\t\tk.total_phrase_user_count,\n\t\tk.total_phrase_request_count,\n\t\tk.date\n\tFROM insights.y_tag_keywords k\n\tLEFT JOIN t ON k.tag_id = t.event_source_id\n\tWHERE date = {date} and advertiser_id != 0\n), keywords_without_banned AS (\n\tSELECT\n\t\ta.*,\n\t\tb.banned_keyword\n\tFROM keywords_with_advertiser a\n\tLEFT JOIN (\n\t\tSELECT\n\t\t\tbanned_keyword,\n\t\t\tadvertiser_id\n\t\tFROM \n\t\t\tinsights.advertiser_banned_keywords\n\t) b ON a.advertiser_id = b.advertiser_id AND a.keyword = b.banned_keyword\n\tWHERE\n\t\tb.banned_keyword = '' OR isNull(b.banned_keyword)\n), keywords_with_median_users AS (\n\tSELECT\n\t\t*,\n\t\tusers / total_phrase_request_count as CVR1,\n\t\tusers / total_phrase_user_count as CVR2,\n\t\tmedian(users) OVER (PARTITION BY tag_id) as median_users\n\tFROM keywords_without_banned\n), keywords_with_rank AS (\n\tSELECT\n\t\ttag_id,\n\t\tkeyword,\n\t\tadvertiser_id,\n\t\tusers,\n\t\ttag_phrase_request_count,\n\t\ttotal_phrase_user_count,\n\t\ttotal_phrase_request_count,\n\t\tCVR1,\n\t\tCVR2,\n\t\tRANK() OVER (PARTITION BY tag_id ORDER BY CVR2 DESC, users DESC) AS cvr_rank,\n\t\tdate\n\tFROM keywords_with_median_users\n\tWHERE users >= median_users\n), keywords_top_50 AS (\n\tSELECT\n\t\t*\n\tFROM keywords_with_rank\n\tWHERE \n\t\tcvr_rank <= 50\n), keywords_with_cpi AS (\n\tSELECT\n\t\ttag_id,\n\t\tkeyword,\n\t\tadvertiser_id,\n\t\tusers,\n\t\ttag_phrase_request_count,\n\t\ttotal_phrase_user_count,\n\t\ttotal_phrase_request_count,\n\t\tCVR1,\n\t\tCVR2,\n\t\tcvr_rank,\n\t\tCVR1 / median(CVR1) OVER (PARTITION BY tag_id) as CPI_by_requests_med,\n\t\tCVR2 / median(CVR2) OVER (PARTITION BY tag_id) as CPI_by_users_med,\n\t\tdate\n\tFROM keywords_top_50\n)\nSELECT\n\ttag_id,\n\tadvertiser_id,\n\tkeyword,\n\tusers,\n\ttag_phrase_request_count,\n\ttotal_phrase_user_count,\n\ttotal_phrase_request_count,\n\tCVR1,\n\tCVR2,\n\t(0.04 + CPI_by_requests_med) * (1.99 - 0.04) AS Normalized_CPI_by_requests_med_ratio,\n\t(0.04 + CPI_by_users_med) * (1.99 - 0.04) AS Normalized_CPI_by_users_med_ratio,\n\tcvr_rank,\n\tdate\nFROM keywords_with_cpi",
+      "TimeoutSeconds": 1800
+    },
+    {
+      "Id": 40,
+      "Name": "insert into insights.y_tag_keywords",
+      "Text": "INSERT INTO insights.y_tag_keywords\n(tag_id, keyword, users, tag_phrase_request_count, total_phrase_user_count, total_phrase_request_count, cuid_count_rank, `date`)\nWITH all_request_phrase_counts AS (\n\tSELECT\n\t\tphrase,\n\t\tSUM(total_phrase_request_count) as sum_total_phrase_request_count,\n\t\tSUM(total_phrase_user_count) as sum_total_phrase_user_count\n\tFROM insights.y_keyword_phrase_web_banner_counts\n\tWHERE\n\t\tdate = {date}\n\t\tAND phrase NOT IN (\n\t\t\t'amp', 'asp', 'aspx', 'cfm', 'cgi', 'css', 'dll', 'doc', 'docx', 'exe',\n\t\t\t'gif', 'htm', 'html', 'index', 'isn', 'jpeg', 'jpg', 'jsp', 'key_word',\n\t\t\t'keyword', 'keywords', 'mp4', 'pdf', 'php', 'png', 'ppt', 'pptx', 'phtml',\n\t\t\t'search', 'title', 'txt', 'xhtml', 'app', 'com', 'std', 'utm', 'https'\n\t\t) \n\t\tAND phrase NOT IN (\n\t\t\tSELECT lower(banned_keyword)\n\t\t\tFROM insights.banned_keywords\n\t\t) \n\tGROUP BY phrase\n\tHAVING sum_total_phrase_request_count > 20\n), joined_counts AS (\n\tSELECT\n\t\tt.phrase AS phrase,\n\t\tcountIf(ngram_tokens = 2)\n\t\t\tOVER (PARTITION BY t.tag_id, request_count, cuid_count,\n\t\t\t\ttotal_phrase_request_count, total_phrase_user_count\n\t\t\t) AS url_matching_2gram_count,\n\t\tcountIf(ngram_tokens = 3)\n\t\t\tOVER (PARTITION BY t.tag_id, request_count, cuid_count,\n\t\t\t\ttotal_phrase_request_count, total_phrase_user_count\n\t\t\t) AS url_matching_3gram_count,\n\t\tcountIf(ngram_tokens = 4)\n\t\t\tOVER (PARTITION BY t.tag_id, request_count, cuid_count,\n\t\t\t\ttotal_phrase_request_count, total_phrase_user_count\n\t\t\t) AS url_matching_4gram_count,\n\t\tngram_tokens,\n\t\tt.tag_id AS tag_id,\n\t\trequest_count AS tag_phrase_request_count,\n\t\tcuid_count,\n\t\tsum_total_phrase_request_count as total_phrase_request_count,\n\t\tsum_total_phrase_user_count as total_phrase_user_count\n\tFROM\n\t\tall_request_phrase_counts r\n\t\tINNER JOIN\n\t\t(\n\t\t\tSELECT\n\t\t\t\t*\n\t\t\tFROM \n\t\t\t\tinsights.y_tag_request_phrase_counts\n\t\t\tWHERE\n\t\t\t\tdate = {date}\n\t\t) t ON r.phrase = t.phrase\n\tWHERE cuid_count >= 2\n), phrase_ranks AS (\n\tSELECT\n\t\tphrase,\n\t\ttag_id,\n\t\tcuid_count,\n\t\ttag_phrase_request_count,\n\t\ttotal_phrase_request_count,\n\t\ttotal_phrase_user_count,\n\t\tRANK() OVER (\n\t\t\tPARTITION BY tag_id ORDER BY cuid_count DESC,\n\t\t\tcuid_count / total_phrase_user_count DESC,\n\t\t\ttag_phrase_request_count / total_phrase_request_count DESC,\n\t\t\tphrase\n\t\t) AS cuid_count_rank\n\tFROM joined_counts\n\tWHERE (ngram_tokens = 1 AND url_matching_2gram_count = 0)\n\t\tOR (ngram_tokens = 2 AND url_matching_3gram_count = 0)\n\t\tOR (ngram_tokens = 3 AND url_matching_4gram_count = 0)\n\t\tOR (ngram_tokens = 4 AND url_matching_4gram_count = 1)\n), phrase_cuid_ranked AS (\n\tSELECT\n\t\tphrase,\n\t\ttag_id,\n\t\tcuid_count,\n\t\ttag_phrase_request_count,\n\t\ttotal_phrase_user_count,\n\t\ttotal_phrase_request_count,\n\t\tcuid_count_rank\n\tFROM phrase_ranks\n\tWHERE cuid_count_rank <= 1000\n)\nSELECT\n\ttag_id,\n\tphrase AS keyword,\n\tcuid_count AS users,\n\ttag_phrase_request_count,\n\ttotal_phrase_user_count,\n\ttotal_phrase_request_count,\n\tcuid_count_rank,\n\t{date} AS date\nFROM phrase_cuid_ranked",
+      "TimeoutSeconds": 1800
+    },
+    {
+      "Id": 39,
+      "Name": "insert into insights.y_tag_request_phrase_counts",
+      "Text": "INSERT\n\tINTO\n\tinsights.y_tag_request_phrase_counts (phrase,\n\ttag_id,\n\tngram_tokens,\n\trequest_count,\n\tcuid_count,\n\t`date`)\nSELECT\n\tr.phrase,\n\tr.tag_id,\n\tr.ngram_tokens,\n\tr.sum_request_count AS request_count,\n\tr.sum_cuid_count AS cuid_count,\n\t{date} AS `date`\nFROM\n\t(\n\t\tSELECT\n\t\t\tphrase,\n\t\t\ttag_id,\n\t\t\tngram_tokens,\n\t\t\tSUM(cuid_count) AS sum_cuid_count,\n\t\t\tSUM(request_count) AS sum_request_count\n\t\tFROM\n\t\t\tinsights.y_derived_tag_request_phrase\n\t\tWHERE\n\t\t\tdate = {date}\n\t\t\tAND (LENGTH(phrase) >= 4\n\t\t\t\tOR ngram_tokens > 1)\n\t\tGROUP BY\n\t\t\tphrase,\n\t\t\ttag_id,\n\t\t\tngram_tokens \n\t) r",
+      "TimeoutSeconds": 3600
+    },
+    {
+      "Id": 35,
+      "Name": "insert into insights.y_keyword_phrase_web_banner_counts",
+      "Text": "INSERT INTO insights.y_keyword_phrase_web_banner_counts\n(`date`, phrase, ngram_tokens, total_phrase_user_count, total_phrase_request_count)\nWITH t AS (\n\tSELECT\n\t\turl_cleaned_hash,\n\t\tcountDistinct(cuid) AS cuid_count,\n\t\tSUM(request_count) AS r_count\n\tFROM insights.y_requests_cuid_sum\n\tWHERE date = {date}\n\tGROUP BY\n\t\turl_cleaned_hash\n)\nSELECT\n\t{date} as date,\n\trp.phrase, \n\trp.ngram_tokens,\n\tt.cuid_count AS total_phrase_user_count,\n\tt.r_count AS total_phrase_request_count\nFROM (\n\tSELECT \n\t\tphrase,\n\t\tngram_tokens,\n\t\turl_cleaned_hash\n\tFROM insights.y_temp_keyword_phrase_web_banner_counts\n\tWHERE\n\t\tdate = {date}\n) rp\nINNER JOIN t ON t.url_cleaned_hash = rp.url_cleaned_hash",
+      "TimeoutSeconds": 3600
+    },
+    {
+      "Id": 33,
+      "Name": "insert into insights.y_temp_keyword_phrase_web_banner_counts",
+      "Text": "INSERT INTO insights.y_temp_keyword_phrase_web_banner_counts\n(`date`, url_cleaned_hash, phrase, ngram_tokens)\nSELECT\n\t{date} as date,\n\turl_cleaned_hash,\n\tphrase,\n\tngram_tokens\nFROM\n(\n\tSELECT\n\t\turl_cleaned_hash,\n\t\t[\n\t\t\ttoken,\n\t\t\ttoken || '-' || next_token,\n\t\t\ttoken || '-' || next_token || '-' || next_next_token,\n\t\t\ttoken || '-' || next_token || '-' || next_next_token || '-' || next_next_next_token\n\t\t] AS phrases,\n\t\tphrase,\n\t\tngram_tokens\n\tFROM \n\t(\n\t\tSELECT\n\t\t\turl_cleaned_hash,\n\t\t\ttoken,\n\t\t\tany(token) OVER (PARTITION BY url_cleaned_hash ORDER BY token_index ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING)\n\t\t\t\tAS next_token,\n\t\t\tany(token) OVER (PARTITION BY url_cleaned_hash ORDER BY token_index ROWS BETWEEN 2 FOLLOWING AND 2 FOLLOWING)\n\t\t\t\tAS next_next_token,\n\t\t\tany(token) OVER (PARTITION BY url_cleaned_hash ORDER BY token_index ROWS BETWEEN 3 FOLLOWING AND 3 FOLLOWING)\n\t\t\t\tAS next_next_next_token\n\t\tFROM \n\t\t(\n\t\t\tSELECT\n\t\t\t\turl_cleaned_hash,\n\t\t\t\ttoken,\n\t\t\t\ttoken_index\n\t\t\tFROM \n\t\t\t(\n\t\t\t\tSELECT\n\t\t\t\t\turl_cleaned_hash,\n\t\t\t\t\tarrayFilter(\n\t\t\t\t\t\ttoken ->\n\t\t\t\t\t\t\t(length(token) >= 3 OR token IN ('ky', 'on', 'x'))\n\t\t\t\t\t\t\tAND NOT (\n\t\t\t\t\t\t\t\tlike(token, '[^a-z]')\n\t\t\t\t\t\t\t\tOR match(token, '.*=$')\n\t\t\t\t\t\t\t\tOR match(token, '^\\d+$')\n\t\t\t\t\t\t\t\tOR match(token, '.*\\d+.*')\n\t\t\t\t\t\t\t\tOR token IN (\n\t\t\t\t\t\t\t\t\t'amp', 'asp', 'aspx', 'cfm', 'cgi', 'css', 'dll', 'doc', 'docx', 'exe',\n\t\t\t\t\t\t\t\t\t'gif', 'htm', 'html', 'index', 'isn', 'jpeg', 'jpg', 'jsp', 'key_word',\n\t\t\t\t\t\t\t\t\t'keyword', 'keywords', 'mp4', 'pdf', 'php', 'png', 'ppt', 'pptx', 'phtml',\n\t\t\t\t\t\t\t\t\t'search', 'title', 'txt', 'xhtml', 'app', 'com', 'std', 'utm'\n\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t\tOR token IN (\n\t\t\t\t\t\t\t\t\tSELECT banned_token FROM insights.banned_tokens\n\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t),\n\t\t\t\t\t\tarrayDistinct(\n\t\t\t\t\t\t\textractAll(url_path, '[-_+ a-z0-9]+=|[a-z0-9]+')\n\t\t\t\t\t\t)\n\t\t\t\t\t) AS tokens\n\t\t\t\tFROM \n\t\t\t\t(\n\t\t\t\t\tWITH\n\t\t\t\t\t(\n\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\t'(^|[^a-zA-Z0-9])(' || arrayStringConcat(groupArray(lower(banned_phrase)), '|') || ')([0-9]|$|[^a-zA-Z0-9])'\n\t\t\t\t\t\tFROM insights.banned_phrases\n\t\t\t\t\t) AS banned_regex\n\t\t\t\t\tSELECT\n\t\t\t\t\t\turl_cleaned,\n\t\t\t\t\t\turl_cleaned_hash,\n\t\t\t\t\t\turl_path\n\t\t\t\t\tFROM\n\t\t\t\t\t(\n\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\turl_cleaned,\n\t\t\t\t\t\t\turl_cleaned_hash,\n\t\t\t\t\t\t\tpath(url_cleaned) AS url_path\n\t\t\t\t\t\tFROM \n\t\t\t\t\t\t(\n\t\t\t\t\t\t\tSELECT \n\t\t\t\t\t\t\t\tDISTINCT url_cleaned,\n\t\t\t\t\t\t\t\turl_cleaned_hash\n\t\t\t\t\t\t\tFROM insights.requests_sum\n\t\t\t\t\t\t\tWHERE \n\t\t\t\t\t\t\t\tdate = {date}\n\t\t\t\t\t\t)\n\t\t\t\t\t) AS urls\n\t\t\t\t\tWHERE NOT match(urls.url_path, banned_regex)\n\t\t\t\t\tAND NOT (startsWith(urls.url_path, '/quote%') OR startsWith(urls.url_path, '/search/%') OR startsWith(urls.url_path, '/photos/%'))\n\t\t\t\t)\n\t\t\t)\n\t\t\tARRAY JOIN\n\t\t\t\t\ttokens AS token,\n\t\t\t\t\tarrayEnumerate(tokens) AS token_index\n\t\t\tWHERE length(tokens) <= 30\n\t\t)\n\t)\n\tARRAY JOIN\n\t\tphrases AS phrase,\n\t\tarrayEnumerate(phrases) AS ngram_tokens\n\tWHERE\n\t\tNOT endsWith(phrase, '-')\n)",
+      "TimeoutSeconds": 3600
+    },
+    {
+      "Id": 34,
+      "Name": "insert into insights.y_requests_cuid_sum",
+      "Text": "INSERT INTO insights.y_requests_cuid_sum\n(url_cleaned_hash, request_count, cuid, `date`)\nSELECT \n\tr.url_cleaned_hash,\n\tr.sum_request_count AS request_count,\n\tr.cuid,\n\t{date} as date\nFROM \n(\n\tWITH (\n\t\tpath(url_cleaned)\n\t) as url_path, (\n\t\tSELECT\n\t\t\t'(^|[^a-zA-Z0-9])(' || arrayStringConcat(groupArray(lower(banned_phrase)), '|') || ')([0-9]|$|[^a-zA-Z0-9])'\n\t\tFROM insights.banned_phrases\n\t) as banned_regex\n\tSELECT \n\t\turl_cleaned_hash,\n\t\tSUM(request_count) AS sum_request_count,\n\t\tcuid\n\tFROM \n\t\tinsights.requests_sum\n\tWHERE \n\t\tdate = {date}\n\t\tAND length(url_cleaned) > position(url_cleaned, '/')\n\t\tAND NOT (\n\t\t\tstartsWith(url_path,'/quote%')\n\t\t\tOR startsWith(url_path, '/search/%')\n\t\t\tOR startsWith(url_path, '/photos/%')\n\t\t)\n\t\tAND NOT match(url_path, banned_regex)\n\tGROUP BY url_cleaned_hash, cuid\n) r",
+      "TimeoutSeconds": 3600
+    },
+    {
+      "Id": 38,
+      "Name": "insert into insights.y_derived_tag_request_phrase",
+      "Text": "INSERT INTO insights.y_derived_tag_request_phrase\n(`date`, tag_id, cuid_count, phrase, ngram_tokens, request_count)\nWITH t AS \n(\n\tSELECT \n\t\ttag_id,\n\t\turl_cleaned_hash,\n\t\tcountDistinct(cuid) as cuid_count,\n\t\tCount(*) as r_count\n\tFROM insights.y_derived_tag_request_urls\n\tWHERE \n\t\tdate = {date}\n\tGROUP BY tag_id, url_cleaned_hash\n)\nSELECT \n\t{date} as date,\n\tt.tag_id,\n\tt.cuid_count,\n\trp.phrase,\n\trp.ngram_tokens,\n\tr_count as request_count\nFROM t\nINNER JOIN (\n\tSELECT\n\t\tphrase,\n\t\tngram_tokens,\n\t\turl_cleaned_hash\n\tFROM insights.y_derived_temp_tag_request_phrase\n\tWHERE\n\t\tdate = {date}\n) rp ON t.url_cleaned_hash = rp.url_cleaned_hash",
+      "TimeoutSeconds": 3600
+    },
+    {
+      "Id": 37,
+      "Name": "insert into insights.y_derived_temp_tag_request_phrase",
+      "Text": "INSERT INTO insights.y_derived_temp_tag_request_phrase\n(`date`, url_cleaned_hash, phrase, ngram_tokens)\nSELECT\n\t{date} as date,\n\turl_cleaned_hash,\n\tphrase,\n\tngram_tokens\nFROM\n(\n\tSELECT\n\t\turl_cleaned_hash,\n\t\t[\n\t\t\ttoken,\n\t\t\ttoken || '-' || next_token,\n\t\t\ttoken || '-' || next_token || '-' || next_next_token,\n\t\t\ttoken || '-' || next_token || '-' || next_next_token || '-' || next_next_next_token\n\t\t] AS phrases,\n\t\tphrase,\n\t\tngram_tokens\n\tFROM \n\t(\n\t\tSELECT\n\t\t\turl_cleaned_hash,\n\t\t\ttoken,\n\t\t\tany(token) OVER (PARTITION BY url_cleaned_hash ORDER BY token_index ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING)\n\t\t\t\tAS next_token,\n\t\t\tany(token) OVER (PARTITION BY url_cleaned_hash ORDER BY token_index ROWS BETWEEN 2 FOLLOWING AND 2 FOLLOWING)\n\t\t\t\tAS next_next_token,\n\t\t\tany(token) OVER (PARTITION BY url_cleaned_hash ORDER BY token_index ROWS BETWEEN 3 FOLLOWING AND 3 FOLLOWING)\n\t\t\t\tAS next_next_next_token\n\t\tFROM \n\t\t(\n\t\t\tSELECT\n\t\t\t\turl_cleaned_hash,\n\t\t\t\ttoken,\n\t\t\t\ttoken_index\n\t\t\tFROM \n\t\t\t(\n\t\t\t\tWITH (\n\t\t\t\t\tpath(url_cleaned)\n\t\t\t\t) as url_path\n\t\t\t\tSELECT\n\t\t\t\t\turl_cleaned_hash,\n\t\t\t\t\tarrayFilter(\n\t\t\t\t\t\ttoken ->\n\t\t\t\t\t\t\t(length(token) >= 3 OR token IN ('ky', 'on', 'x'))\n\t\t\t\t\t\t\tAND NOT (\n\t\t\t\t\t\t\t\tlike(token, '[^a-z]')\n\t\t\t\t\t\t\t\tOR match(token, '.*=$')\n\t\t\t\t\t\t\t\tOR match(token, '^\\d+$')\n\t\t\t\t\t\t\t\tOR match(token, '.*\\d+.*')\n\t\t\t\t\t\t\t\tOR token IN (\n\t\t\t\t\t\t\t\t\t'amp', 'asp', 'aspx', 'cfm', 'cgi', 'css', 'dll', 'doc', 'docx', 'exe',\n\t\t\t\t\t\t\t\t\t'gif', 'htm', 'html', 'index', 'isn', 'jpeg', 'jpg', 'jsp', 'key_word',\n\t\t\t\t\t\t\t\t\t'keyword', 'keywords', 'mp4', 'pdf', 'php', 'png', 'ppt', 'pptx', 'phtml',\n\t\t\t\t\t\t\t\t\t'search', 'title', 'txt', 'xhtml', 'app', 'com', 'std', 'utm'\n\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t\tOR token IN (\n\t\t\t\t\t\t\t\t\tSELECT banned_token FROM insights.banned_tokens\n\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t),\n\t\t\t\t\t\tarrayDistinct(\n\t\t\t\t\t\t\textractAll(url_path, '[-_+ a-z0-9]+=|[a-z0-9]+')\n\t\t\t\t\t\t)\n\t\t\t\t\t) AS tokens\n\t\t\t\tFROM \n\t\t\t\t(\n\t\t\t\t\tWITH\n\t\t\t\t\t(\n\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\t'(^|[^a-zA-Z0-9])(' || arrayStringConcat(groupArray(lower(banned_phrase)), '|') || ')([0-9]|$|[^a-zA-Z0-9])'\n\t\t\t\t\t\tFROM insights.banned_phrases\n\t\t\t\t\t) AS banned_regex\n\t\t\t\t\tSELECT\n\t\t\t\t\t\turl_cleaned,\n\t\t\t\t\t\turl_cleaned_hash,\n\t\t\t\t\t\turl_path\n\t\t\t\t\tFROM \n\t\t\t\t\t(\n\t\t\t\t\t\tSELECT\n\t\t\t\t\t\t\turl_cleaned,\n\t\t\t\t\t\t\turl_cleaned_hash,\n\t\t\t\t\t\t\tpath(url_cleaned) AS url_path\n\t\t\t\t\t\tFROM \n\t\t\t\t\t\t(\n\t\t\t\t\t\t\tSELECT \n\t\t\t\t\t\t\t\tDISTINCT url_cleaned,\n\t\t\t\t\t\t\t\turl_cleaned_hash\n\t\t\t\t\t\t\tFROM insights.y_derived_tag_request_urls\n\t\t\t\t\t\t\tWHERE date = {date}\n\t\t\t\t\t\t)\n\t\t\t\t\t) AS urls\n\t\t\t\t\tWHERE NOT match(urls.url_path, banned_regex)\n\t\t\t\t)\n\t\t\t)\n\t\t\tARRAY JOIN\n\t\t\t\t\ttokens AS token,\n\t\t\t\t\tarrayEnumerate(tokens) AS token_index\n\t\t\tWHERE length(tokens) <= 30\n\t\t)\n\t)\n\tARRAY JOIN\n\t\tphrases AS phrase,\n\t\tarrayEnumerate(phrases) AS ngram_tokens\n\tWHERE\n\t\tNOT endsWith(phrase, '-')\n)",
+      "TimeoutSeconds": 3600
+    },
+    {
+      "Id": 32,
+      "Name": "insert into insights.y_tag_candidates",
+      "Text": "INSERT INTO insights.y_tag_candidates(`date`, tag_id, cuid, iid, tag_timestamp_utc)\nWITH iid_cuid_mapping AS (\n    SELECT\n\t    iid,\n\t    cuid\n\tFROM\n\t    warehouse.daily_iid_graph_cache\n\tWHERE date = {date}\n\t    AND cuid NOT IN (\n\t        7865586783, 3147981638, 494385130, 7130541546,\n\t        6492703302, 7745672931, 7765171935, 7874020674,\n\t        60922436, 7659429871, 16767942380)\n\t    AND iid NOT IN (\n\t        '23.00000000-0000-0000-0000-000000000000',\n\t        '7.00000000000000000000000000000000',\n\t        '23.TRUE',\n\t        '1.00000000000000000000000000000000',\n\t        '29.0',\n\t        '12.XY1365GeDX3v8FRlDpX0jCUa0nlk_nhaILHaA6KzZQ6x1I5fw',\n\t        '12.',\n\t        '7.',\n\t        '29.',\n\t        '30.',\n\t        '32.',\n\t        '4.',\n\t        '17.',\n\t        '18.',\n\t        '22.',\n\t        '33.',\n\t        '7.a55b97d556564f05b307672752f0ba39',\n\t        '7.b2dde89f52d5489b83f2e9bd4e7bbb86',\n\t        '7.d0e176bd9f1d480496bac13d751e1c25',\n\t        '7.f731872517c7453b8888e5910f39f684',\n\t        '12.XY1365bve-tdPU-pz1HvvTZrS3ylB0XYqXYohEVxwtxm_LFdM',\n\t        '12.XY1365D7PWuId9cosgqKaNLphMIA15Ht5yuu2l9bRpwtlZ7KA',\n\t        '12.XY1365dqK8K3aXbBFbl_QjjVFFrB6s4LHhNR5t_B8M-qWYG90',\n\t        '12.XY1365eZ3zeZ6fOY_zgeUBJv38LYtFy8N5WTU0NAD-SGBzvvU',\n\t        '12.XY1365f65fE_06ZJk4kaf9xNr5IRrEXHS6qcWVbRLYIL3QxX4',\n\t        '12.XY1365gmwAtZk_Y-HnJpItSeFXTC4UifhTpgpy8IaBuq-LG4M',\n\t        '12.XY1365JU0N9V36FPXkEbAk8BuDojdGkk5PNGUnOlBUWS5qnPo',\n\t        '12.XY1365O6OrA7_Q6vL5cnRoaiCe2fyagp3MBw2d9WOyQCeD0Nw',\n\t        '12.XY1365PhO0yGEM5Ell_SaVuSLI_UtVh0-0x2-C5OQy7Rh7wd8',\n\t        '12.XY1365QhOvEM8w2DQ1W2xo8GLvuk6aqy9UE6CPUglTE5vutNw',\n\t        '12.XY1365sjZJD4MyPuAboSOOhMIbchIBmhP2MvOQ2SG0FrPrTp8',\n\t        '12.XY1365UGfMJlOysPCQUaG6_aBc3Vu_0aOlnixsG8kmdTLtfEM',\n\t        '12.XY1365wTYdQ86toyqUKRt6KeJB5OYmYIHiKZ0KTcMydFF-Ng4',\n\t        '12.XY1365XC19YpfhKXci5-vjFlhA62dq3VbAc_SQalQ_mqR9VtY',\n\t        '12.XY1365YK_Zorjn8rWBghUL4qMFx2cdP87ohAUDiFhwSnVWxNY',\n\t        '12.XY1365Z0TJGOqYlv9QDy_C1E4xrn-DWnNZ3aRwZlAW_3SixCc',\n\t        '12.XY13653vhbD19q4vYBk-PXFWYWo0sJa273jNEttCKsxfI7jl8',\n\t        '12.XY13656YkMGVlCB2iO3Yw_F7YO3FWIC0E86sMCF-1XnRdLzK8',\n\t        '12.XY13659QvggFq0nO8SLsXytNC47zN8eRdCL2nEDVkT8asYTyQ',\n\t        '13.Xi1365ZztJpPYeQ-1QPh9r-CRQCOacxfAYx7lhwZJJSA7qG2afWLViAt1aQ3yhZ3-xH7MY',\n\t        '17.CAESEA3uxQc1CrgjTl7_aaLZ7nc',\n\t        '17.CAESEDsGuawKAbLWYkqP977PxqY',\n\t        '17.CAESELS-5LImGj1s0t05SkufxYc',\n\t        '17.CAESEPATAhv_ngG6c7o2TTcqbc0',\n\t        '7.2ca3d987846142d79aeab96f8a978ef1',\n\t        '7.4fbf5f2682124ade877e6169431b609f',\n\t        '7.6e310e041faf4b13a7f7e5e848ff61fb',\n\t        '7.25e6ea44b7fb48629810da16a9fe5086',\n\t        '7.36efbdfa5c044f27a21f82e6112f6824',\n\t        '7.395cec5c4b144e688bb9ddf847e79ed2',\n\t        '7.560b119d5d274388b547c6b435553d4a',\n\t        '16.24105d7554bc4d317b28ee7960ac51fb6a963ad6',\n\t        '7.265161c6049b4ab99d2f17e874ca9c0e')\n), tags AS (\n    SELECT\n    \tdate,\n        event_source_id as tag_id,\n        event_timestamp_utc as tag_timestamp_utc,\n        iid\n    FROM warehouse.events\n    WHERE\n        date = {date}\n        AND iid NOT IN ('', '7.00000000000000000000000000000000')\n        AND event_source_id NOT IN (117911, 118330) \n), tags_with_cuids AS (\n    SELECT\n    \tt.date,\n        tag_id,\n        tag_timestamp_utc,\n        cuid\n    FROM\n        iid_cuid_mapping m\n        INNER JOIN tags t\n        ON m.iid = t.iid\n)\nSELECT\n    t.date,\n    t.tag_id,\n    t.cuid,\n    m.iid,\n    t.tag_timestamp_utc\nFROM\n    iid_cuid_mapping m\n    INNER JOIN tags_with_cuids t ON m.cuid = t.cuid",
+      "TimeoutSeconds": 3600
+    }
+  ],
+  "Items": [
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 40,
+      "ItemType": 1,
+      "IterationParameters": [
+        {
+          "partition": "0"
+        },
+        {
+          "partition": "1"
+        },
+        {
+          "partition": "2"
+        },
+        {
+          "partition": "3"
+        },
+        {
+          "partition": "4"
+        },
+        {
+          "partition": "5"
+        },
+        {
+          "partition": "6"
+        },
+        {
+          "partition": "7"
+        },
+        {
+          "partition": "8"
+        },
+        {
+          "partition": "9"
+        },
+        {
+          "partition": "10"
+        }
+      ],
+      "IterationType": 4,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 4,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 36,
+      "RepartitionFormat": null,
+      "RepartitionTable": "",
+      "Step": 1
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 41,
+      "ItemType": 1,
+      "IterationParameters": [
+        {
+          "partition": "0"
+        },
+        {
+          "partition": "1"
+        },
+        {
+          "partition": "2"
+        },
+        {
+          "partition": "3"
+        },
+        {
+          "partition": "4"
+        },
+        {
+          "partition": "5"
+        },
+        {
+          "partition": "6"
+        },
+        {
+          "partition": "7"
+        },
+        {
+          "partition": "8"
+        },
+        {
+          "partition": "9"
+        },
+        {
+          "partition": "10"
+        }
+      ],
+      "IterationType": 4,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 4,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 42,
+      "RepartitionFormat": null,
+      "RepartitionTable": "",
+      "Step": 1
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 49,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 41,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 6
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 48,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 40,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 5
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 47,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 39,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 4
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 46,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 35,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 4
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 44,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 33,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 3
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 43,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 34,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 3
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 45,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 38,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 3
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 42,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 37,
+      "RepartitionFormat": 1,
+      "RepartitionTable": "",
+      "Step": 2
+    },
+    {
+      "CalculatedPartitions": [],
+      "Enabled": true,
+      "Id": 39,
+      "ItemType": 1,
+      "IterationParameters": [],
+      "IterationType": 1,
+      "OutputRelativePathTemplate": "",
+      "ParallelIterationsCount": 0,
+      "Parameters": {},
+      "PipelineId": 14,
+      "PredefinedPartitions": {},
+      "QueryTemplateId": 32,
+      "RepartitionFormat": null,
+      "RepartitionTable": "",
+      "Step": 0
+    }
+  ],
+  "Pipelines": [
+    {
+      "CronSchedule": "",
+      "Enabled": true,
+      "Id": 14,
+      "Name": "keywords (dublicate 13)",
+      "Parameters": {}
+    }
+  ]
+}
